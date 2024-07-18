@@ -1,0 +1,456 @@
+---
+title: "HPNE EV and KRAS - 4i Analysis"
+author: "Gaith Droby"
+date: "2024-04-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(data.table)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(ggridges)
+```
+
+#### Data Import from standardized 4i output
+```{r}
+# List all .csv files in the current directory
+std_data <- list.files(path = ".", pattern = '*.csv')
+
+# Define sample names
+sampleName <- c('EV', 'EV 200', 'KRAS', 'KRAS 200')
+
+featureName <- c('1.DNA', 'EdU', 'CDK2', 'pRB', 'Rb', 'pRB.RB', 'cycA2', 'pp53', 'pH2AX', 'pp27', 'p21', 'pp21')
+
+# Use lapply to apply the function to each element in the list
+data_frames <- lapply(std_data, read.csv)
+
+# Assign sample names to each data frame
+names(data_frames) <- sampleName
+
+# Use lapply to apply the function to each element in the list
+data_frames <- lapply(data_frames, function(df) {
+    colnames(df) <- featureName
+    return(df)
+})
+```
+
+#### Remove outliers based on DNA content (>4N DNA)
+```{r}
+# Use lapply to apply the function to each element in the list
+data_frames <- lapply(data_frames, function(df) {
+    df <- df[df$'1.DNA' <= 5, ]
+    df <- df[apply(df, 1, function(x) all(x <= 7.5)),]
+    return(df)
+})
+```
+
+#### Label G1, S, and G2/M phases of each condition (based on DNA content)
+```{r}
+# Use lapply to apply the function to each element in the list
+g1_data_frames <- lapply(data_frames, function(df) {
+    df <- df[df$'1.DNA' <= 0, ]
+    return(df)
+})
+
+s_data_frames <- lapply(data_frames, function(df) {
+    df <- df[df$'1.DNA' >= 0, ]
+    df <- df[df$'1.DNA' <= 1.25, ]
+    return(df)
+})
+
+g2_data_frames <- lapply(data_frames, function(df) {
+    df <- df[df$'1.DNA' >= 1.25, ]
+    return(df)
+})
+```
+
+
+#### Plot features in violin plots 
+```{r}
+plot_violin <- function(df, name) {
+  # Add a column with the sample name to the data frame
+  df$SampleName <- name
+  
+  # Reshape the data frame to long format
+  long_df <- gather(df, key = "Feature", value = "Measurement", -SampleName)
+  
+  # Create the violin plot with different colors for each Feature
+  p <- ggplot(long_df, aes(x = Feature, y = Measurement, fill = Feature)) + # Change here
+    geom_violin(trim = FALSE) +
+    scale_fill_viridis_d() + # Use viridis color palette for the fill
+    labs(title = paste("Violin Plot for", name)) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) # Rotate x labels for readability
+  
+  # Save the plot to the working directory
+  ggsave(filename = paste("smpl_vioPlt_", name, ".pdf", sep = ""), plot = p, width = 10, height = 6)
+  
+  return(p)
+}
+
+# Loop through the list of data frames and plot each one with its sample name
+plots <- mapply(plot_violin, data_frames, names(data_frames), SIMPLIFY = FALSE)
+
+# print them one by one
+for (p in plots) {
+  print(p)
+}
+```
+
+#### Plot features in violin plots 
+```{r echo=FALSE}
+plot_violin <- function(df, name) {
+  # Add a column with the sample name to the data frame
+  df$SampleName <- name
+  
+  # Reshape the data frame to long format
+  long_df <- gather(df, key = "Feature", value = "Measurement", -SampleName)
+  
+  # Create the violin plot with different colors for each Feature
+  p <- ggplot(long_df, aes(x = Feature, y = Measurement, fill = Feature)) + # Change here
+    geom_violin(trim = FALSE) +
+    scale_fill_viridis_d() + # Use viridis color palette for the fill
+    labs(title = paste("Violin Plot for", name)) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) # Rotate x labels for readability
+  
+  # Save the plot to the working directory
+  #ggsave(filename = paste("smpl_vioPlt_", name, ".pdf", sep = ""), plot = p, width = 10, height = 6)
+  
+  return(p)
+}
+
+# Loop through the list of data frames and plot each one with its sample name
+plots <- mapply(plot_violin, s_data_frames, names(s_data_frames), SIMPLIFY = FALSE)
+
+# print them one by one
+for (p in plots) {
+  print(p)
+}
+
+```
+
+# Compare the distribution of each feature in the EV and KRAS cells
+```{r}
+# Loop through each feature
+for (feature in featureName) {
+  # Combine the current feature column from each data frame into one data frame
+  combined_df <- do.call(rbind, lapply(seq_along(data_frames), function(i) {
+    df <- data_frames[[i]][, feature, drop = FALSE] # Select the current feature column
+    df$SampleName <- sampleName[i] # Add the sample name
+    df$FeatureName <- feature # Add the feature name
+    return(df)
+  }))
+  
+  # Rename the feature column to a generic name for plotting
+  names(combined_df)[1] <- "Measurement"
+  
+  # Create the violin plot
+  p <- ggplot(combined_df, aes(x = SampleName, y = Measurement, fill = SampleName)) +
+    geom_violin(trim = FALSE) +
+    scale_fill_brewer(palette = "Set3") + # Use a color palette for the fill
+    labs(title = paste("Violin Plot for", feature)) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) # Rotate x labels for readability
+  
+  # Save the plot to the working directory with a unique name for each feature
+  ggsave(paste("comp_vioPlt_", feature, ".pdf", sep = ""), plot = p, width = 10, height = 6)
+  
+    print(p)
+}
+```
+
+
+# Compare the G1-phase distribution of each feature in the EV and KRAS cells
+```{r eval=FALSE, include=FALSE}
+# Loop through each feature
+for (feature in featureName) {
+  # Combine the current feature column from each data frame into one data frame
+  combined_df <- do.call(rbind, lapply(seq_along(g1_data_frames), function(i) {
+    df <- g1_data_frames[[i]][, feature, drop = FALSE] # Select the current feature column
+    df$SampleName <- sampleName[i] # Add the sample name
+    df$FeatureName <- feature # Add the feature name
+    return(df)
+  }))
+  
+  # Rename the feature column to a generic name for plotting
+  names(combined_df)[1] <- "Signal"
+  
+  # Create the violin plot
+  p <- ggplot(combined_df, aes(x = SampleName, y = Signal, fill = SampleName)) +
+    geom_violin(trim = FALSE) +
+    scale_fill_brewer(palette = "Set3") + # Use a color palette for the fill
+    labs(title = paste("G1-phase violin Plot for", feature)) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) # Rotate x labels for readability
+  
+  # Save the plot to the working directory with a unique name for each feature
+  ggsave(paste("g1_comp_vioPlt_", feature, ".pdf", sep = ""), plot = p, width = 10, height = 6)
+  
+    print(p)
+}
+```
+
+# Compare the S-phase distribution of each feature in the EV and KRAS cells
+```{r eval=FALSE, include=FALSE}
+# Loop through each feature
+for (feature in featureName) {
+  # Combine the current feature column from each data frame into one data frame
+  combined_df <- do.call(rbind, lapply(seq_along(s_data_frames), function(i) {
+    df <- s_data_frames[[i]][, feature, drop = FALSE] # Select the current feature column
+    df$SampleName <- sampleName[i] # Add the sample name
+    df$FeatureName <- feature # Add the feature name
+    return(df)
+  }))
+  
+  # Rename the feature column to a generic name for plotting
+  names(combined_df)[1] <- "Signal"
+  
+  # Create the violin plot
+  p <- ggplot(combined_df, aes(x = SampleName, y = Signal, fill = SampleName)) +
+    geom_violin(trim = FALSE) +
+    scale_fill_brewer(palette = "Set3") + # Use a color palette for the fill
+    labs(title = paste("S-phase violin Plot for", feature)) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) # Rotate x labels for readability
+  
+  # Save the plot to the working directory with a unique name for each feature
+  #ggsave(paste("g1_comp_vioPlt_", feature, ".pdf", sep = ""), plot = p, width = 10, height = 6)
+  
+    print(p)
+}
+```
+# Compare the G1-phase distribution of each feature in the EV and KRAS cells
+```{r}
+# Loop through each feature
+for (feature in featureName) {
+  # Combine the current feature column from each data frame into one data frame
+  combined_df <- do.call(rbind, lapply(seq_along(g1_data_frames), function(i) {
+    df <- g2_data_frames[[i]][, feature, drop = FALSE] # Select the current feature column
+    df$SampleName <- sampleName[i] # Add the sample name
+    df$FeatureName <- feature # Add the feature name
+    return(df)
+  }))
+  
+  # Rename the feature column to a generic name for plotting
+  names(combined_df)[1] <- "Signal"
+  
+  # Perform one-way ANOVA
+  res.aov <- aov(Signal ~ SampleName, data = combined_df)
+ print(sampleName)
+  # Perform multiple comparison test
+  res.tukey <- TukeyHSD(res.aov)
+  colnames(res.tukey$SampleName) <- c('comparison', 'lwr', 'upr', 'padj')
+  
+  # Create the box and whisker plot
+  p <- ggplot(combined_df, aes(x = SampleName, y = Signal, fill = SampleName)) +
+    geom_boxplot() +
+    scale_fill_brewer(palette = "Set3") + # Use a color palette for the fill
+    labs(title = paste("G1-phase Box and Whisker Plot for", feature)) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) # Rotate x labels for readability
+  
+  # Save the plot to the working directory with a unique name for each feature
+  ggsave(paste("g1_comp_boxPlt_", feature, ".pdf", sep = ""), plot = p, width = 10, height = 6)
+  
+#  # Annotate the plot with the results of the multiple comparison test
+#  p <- p + geom_text(data = as.data.frame(res.tukey$SampleName), aes(x = comparison, y = lwr, label = sprintf("p = #%.3f", padj)), vjust = -1.5)
+  
+  # Print the plot
+  print(p)
+}
+```
+
+# Compare the S-phase distribution of each feature in the EV and KRAS cells
+```{r}
+# Loop through each feature
+for (feature in featureName) {
+  # Combine the current feature column from each data frame into one data frame
+  combined_df <- do.call(rbind, lapply(seq_along(s_data_frames), function(i) {
+    df <- g2_data_frames[[i]][, feature, drop = FALSE] # Select the current feature column
+    df$SampleName <- sampleName[i] # Add the sample name
+    df$FeatureName <- feature # Add the feature name
+    return(df)
+  }))
+  
+  # Rename the feature column to a generic name for plotting
+  names(combined_df)[1] <- "Signal"
+  
+  # Perform one-way ANOVA
+  res.aov <- aov(Signal ~ SampleName, data = combined_df)
+ print(sampleName)
+  # Perform multiple comparison test
+  res.tukey <- TukeyHSD(res.aov)
+  colnames(res.tukey$SampleName) <- c('comparison', 'lwr', 'upr', 'padj')
+  
+  # Create the box and whisker plot
+  p <- ggplot(combined_df, aes(x = SampleName, y = Signal, fill = SampleName)) +
+    geom_boxplot() +
+    scale_fill_brewer(palette = "Set3") + # Use a color palette for the fill
+    labs(title = paste("S-phase Box and Whisker Plot for", feature)) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) # Rotate x labels for readability
+  
+  # Save the plot to the working directory with a unique name for each feature
+  ggsave(paste("s_comp_boxPlt_", feature, ".pdf", sep = ""), plot = p, width = 10, height = 6)
+  
+#  # Annotate the plot with the results of the multiple comparison test
+#  p <- p + geom_text(data = as.data.frame(res.tukey$SampleName), aes(x = comparison, y = lwr, label = sprintf("p = #%.3f", padj)), vjust = -1.5)
+  
+  # Print the plot
+  print(p)
+}
+```
+
+# Compare the G2/M-phase distribution of each feature in the EV and KRAS cells
+```{r}
+# Loop through each feature
+for (feature in featureName) {
+  # Combine the current feature column from each data frame into one data frame
+  combined_df <- do.call(rbind, lapply(seq_along(g2_data_frames), function(i) {
+    df <- g2_data_frames[[i]][, feature, drop = FALSE] # Select the current feature column
+    df$SampleName <- sampleName[i] # Add the sample name
+    df$FeatureName <- feature # Add the feature name
+    return(df)
+  }))
+  
+  # Rename the feature column to a generic name for plotting
+  names(combined_df)[1] <- "Signal"
+  
+  # Perform one-way ANOVA
+  res.aov <- aov(Signal ~ SampleName, data = combined_df)
+ print(sampleName)
+  # Perform multiple comparison test
+  res.tukey <- TukeyHSD(res.aov)
+  colnames(res.tukey$SampleName) <- c('comparison', 'lwr', 'upr', 'padj')
+  
+  # Create the box and whisker plot
+  p <- ggplot(combined_df, aes(x = SampleName, y = Signal, fill = SampleName)) +
+    geom_boxplot() +
+    scale_fill_brewer(palette = "Set3") + # Use a color palette for the fill
+    labs(title = paste("G2M-phase Box and Whisker Plot for", feature)) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) # Rotate x labels for readability
+  
+  # Save the plot to the working directory with a unique name for each feature
+  ggsave(paste("g2_comp_boxPlt_", feature, ".pdf", sep = ""), plot = p, width = 10, height = 6)
+  
+#  # Annotate the plot with the results of the multiple comparison test
+#  p <- p + geom_text(data = as.data.frame(res.tukey$SampleName), aes(x = comparison, y = lwr, label = sprintf("p = #%.3f", padj)), vjust = -1.5)
+  
+  # Print the plot
+  print(p)
+}
+```
+
+## Trying ridgeline plot to see if the plots look better
+```{r eval=FALSE, include=FALSE}
+for (feature in featureName) {
+  # Combine the current feature column from each data frame into one data frame
+  combined_df <- do.call(rbind, lapply(seq_along(data_frames), function(i) {
+    df <- data_frames[[i]][, feature, drop = FALSE] # Select the current feature column
+    df$SampleName <- sampleName[i] # Add the sample name
+    df$FeatureName <- feature # Add the feature name
+    return(df)
+  }))
+  
+  # Rename the feature column to a generic name for plotting
+  names(combined_df)[1] <- "Measurement"
+ 
+    # Create the ridge line plot
+    p <- ggplot(combined_df, aes(x = Measurement, y = SampleName, fill = SampleName)) +
+      geom_density_ridges() +
+      scale_fill_brewer(palette = "Set3") + # Use a color palette for the fill
+      labs(title = paste("Ridge Line Plot for", feature)) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1)) # Rotate x labels for readability
+    
+    # Save the plot to the working directory with a unique name for each feature
+    ggsave(paste("comp_rdgLine_", feature, ".pdf", sep = ""), plot = p, width = 10, height = 6)
+    print(p)
+}
+```
+
+## Density plots
+```{r eval=FALSE, include=FALSE}
+for (feature in featureName) {
+    # Combine the current feature column from each data frame into one data frame
+    combined_df <- do.call(rbind, lapply(seq_along(data_frames), function(i) {
+        df <- data_frames[[i]][, feature, drop = FALSE] # Select the current feature column
+        df$SampleName <- sampleName[i] # Add the sample name
+        df$FeatureName <- feature # Add the feature name
+        return(df)
+    }))
+    
+    # Rename the feature column to a generic name for plotting
+    names(combined_df)[1] <- "Measurement"
+    
+    # Create the density plot
+    p <- ggplot(combined_df, aes(x = Measurement, fill = SampleName)) +
+        geom_density(alpha = 0.65) +
+        scale_fill_brewer(palette = "Set3") + # Use a color palette for the fill
+        labs(title = paste("Density Plot for", feature)) +
+        theme_minimal()
+    
+    # Print the plot
+    print(p)
+    
+    # Save the plot to the working directory with a unique name for each feature
+    ggsave(paste("comp_dnsty_", feature, ".pdf", sep = ""), plot = p, width = 10, height = 6)
+}
+```
+
+## Pair-wise density plots to show the difference within the same cell line
+```{r Pair-wise plots, eval=FALSE, include=FALSE}
+# Function to create mirrored density plots
+pairwise_density_plot <- function(df1, df2, n_df1, n_df2, f1, f2, col) {
+    # Create a new plot
+    p <- ggplot() +
+        geom_density(data = df1, aes(x = .data[[col]], fill = f1), alpha = 0.7) +
+        geom_density(data = df2, aes(x = .data[[col]], fill = f2), linetype = "dashed", alpha = 0.7) +
+        scale_fill_brewer(palette = "Set3") +  
+      #scale_fill_manual(values = c(n_df1 = "lightblue", n_df2 = "red")) +
+        labs(title = paste("Pair-wise Density Plot for", col),
+             x = col,
+             y = "Density") +
+        theme_minimal()
+    
+    return(p)
+}
+
+# Find the indices of EV and EV200 data frames
+ev_index <- match("EV", sampleName)
+ev200_index <- match("EV200", sampleName)
+
+# Create mirrored density plots for EV vs. EV200
+for (feature in featureName) {
+    plot <- pairwise_density_plot(data_frames[[ev_index]], data_frames[[ev200_index]],
+                                       names(data_frames[1])[1], names(data_frames[2])[1],
+                                       sampleName[ev_index], sampleName[ev200_index], feature)
+
+    # Save the plot to the working directory with a unique name for each feature
+    ggsave(paste("EV_pair_dnsty_", feature, ".pdf", sep = ""), plot = plot, width = 10, height = 6)
+}
+
+# Find the indices of KRAS and KRAS200 data frames
+kras_index <- match("KRAS", sampleName)
+kras200_index <- match("KRAS200", sampleName)
+
+for (feature in featureName) {
+    plot <- pairwise_density_plot(data_frames[[kras_index]], data_frames[[kras200_index]],
+                                       names(data_frames[3]), names(data_frames[4]),
+                                       sampleName[kras_index],sampleName[kras200_index],feature)
+
+    # Save the plot to the working directory with a unique name for each feature
+    ggsave(paste("KRAS_pair_dnsty_", feature, ".pdf", sep = ""), plot = plot, width = 10, height = 6)
+    print(plot)
+}
+```
+
+## Output filtered data-sets to plot in Jupyter notebook
+```{r Write filtered data, eval=FALSE, include=FALSE}
+# Use lapply to apply the function to each element in the list
+lapply(names(data_frames), function(x) {
+    filename <- paste0("R_",x, "_filtered.csv")
+    counter <- 0
+    while(file.exists(filename)) {
+        counter <- counter + 1
+        filename <- paste0(x, "_filtered", counter, ".csv")
+    }
+    write.csv(data_frames[[x]], filename, row.names = FALSE)
+})
+```
