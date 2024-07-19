@@ -1,4 +1,4 @@
-# TCGA-PAAD-HPNE-KRAS-4i-Analysis
+# PancreaticCancer-DifferentialExpression-CellPhate
 
-Repository for HPNE mRNA-seq and TCGA gene expression analysis and iterative indirect immunofluorescence imaging performed in [paper title], now published in [journal].
+Repository for HPNE-KRAS(G12V) RNA-seq, TCGA-PAAD analysis and CellPhate assessment using iterative indirect immunofluorescence imaging (4i) performed for manuscript titled 'TRIP13 protects pancreatic cancer cells against intrinsic and therapy-induced DNA replication stress' submitted to NAR Cancer.
 
