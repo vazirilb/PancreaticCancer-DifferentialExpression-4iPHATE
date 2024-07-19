@@ -1,0 +1,547 @@
+---
+title: "tcga_paad_DESeq2_GSEA_ddr"
+format: html
+editor: visual
+---
+
+# TCGA analysis
+
+# Identify differentially expressed DDR genes in TCGA PDAC high purity tumors
+
+```{r}
+# load necessary libraries
+library(tidyr)
+library(readxl)
+library(openxlsx)
+library(TCGAbiolinks)
+library(SummarizedExperiment)
+library(DESeq2)
+library(ggplot2)
+library(org.Hs.eg.db)
+library(dplyr)
+library(writexl)
+# Install and load the VennDiagram package
+#install.packages("VennDiagram")
+library(VennDiagram)
+library(pheatmap)
+library(AnnotationDbi)
+library(EnhancedVolcano)
+library(clusterProfiler)
+library(enrichplot)
+```
+
+## Download data from TCGA using TCGAbiolinks
+
+```{r}
+# set the working directory
+#setwd("path/to/the/working/directory")
+setwd("C:/Users/jayra/Documents/0 r/tcga/paad")
+```
+
+TCGAbiolinks help documents is available at <https://bioconductor.org/packages/release/bioc/vignettes/TCGAbiolinks/inst/doc/query.html> <https://bioconductor.riken.jp/packages/3.3/bioc/vignettes/TCGAbiolinks/inst/doc/tcgaBiolinks.html#updates>
+
+```{r}
+# retrive and view the list of GDC projects
+gdcprojects <- getGDCprojects()
+view(gdcprojects)
+```
+
+```{r}
+# get project summary for TCGA-PAAD
+getProjectSummary('TCGA-PAAD')
+```
+
+```{r}
+# build a query to retrieve gene expression data for TCGA-PAAD
+query_tcga_paad <- GDCquery( project = 'TCGA-PAAD',
+                             data.category = "Transcriptome Profiling",
+                             experimental.strategy = 'RNA-Seq',
+                             workflow.type = "STAR - Counts",
+                             data.type = "Gene Expression Quantification",
+                             sample.type = c("Primary Tumor", "Solid Tissue Normal"),
+                             access = "open")
+output_paad <- getResults(query_tcga_paad) 
+view(output_paad)
+```
+
+```{r}
+# download data using GDCdownload
+GDCdownload(query_tcga_paad)
+```
+
+```{r}
+# check if files are downloaded
+list.files("C:/Users/jayra/Documents/0 r/tcga/paad/GDCdata/TCGA-PAAD/Transcriptome_Profiling/Gene_Expression_Quantification/", recursive = TRUE)
+```
+
+```{r}
+# prepare data
+tcga_paad_data <- GDCprepare(query_tcga_paad, summarizedExperiment = TRUE)
+```
+
+```{r}
+# extract count matrix for DESeq analysis
+paad_matrix_unstrand <- assay(tcga_paad_data, 'unstranded')
+# Remove '-' from column names and assign back to matrix 
+colnames(paad_matrix_unstrand) <- gsub("-", "", colnames(paad_matrix_unstrand))
+# Remove '.' from row names and assign back to matrix 
+rownames(paad_matrix_unstrand) <- substring(rownames(paad_matrix_unstrand), 1, 15)
+paad_matrix_unstrand[1:10,1:10]
+```
+
+```{r}
+#remove low counts
+paad_matrix_unstrand <- paad_matrix_unstrand[rowSums(paad_matrix_unstrand) > 0, ]
+```
+
+## **Analyzing RNA-seq data with DESeq2**
+
+[https://www.bioconductor.org/packages/release/bioc/vignettes/DESeq2/inst/doc/DESeq2.html](https://www.bioconductor.org/packages/release/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#countmat){.uri}
+
+It is absolutely critical that the columns of the count matrix and the **rows of the column data** (information about samples) are in the same order. DESeq2 will not make guesses as to which column of the count matrix belongs to which row of the column data, these must be provided to DESeq2 already in consistent order.
+
+```{r}
+# extract gene and sample metadata from summarizedExperiment object
+gene_metadata <- as.data.frame(rowData(tcga_paad_data))
+coldata <- as.data.frame(colData(tcga_paad_data))
+# Remove '-' from row names and assign back to coldata 
+rownames(coldata) <- gsub("-", "", rownames(coldata))
+colnames(coldata) <- gsub("_", "", colnames(coldata))
+coldata$sampletype <- gsub(" ", "", coldata$sampletype)
+```
+
+```{r}
+# select only high purity TCGA-PAAD samples (ref: PMID  28810144)
+high_purity <- read_excel("tcga_paad_high_purity_samples.xlsx")
+# keep only mtaching rows between 'samplesubmitterid' column in 'coldata' and 'sample_id' in 'high_purity'
+high_purity_coldata <- inner_join(coldata, high_purity, by = c("samplesubmitterid" = "sample_id"))
+
+# filter count matrix for high purity samples 
+# in paad_matrix_unstrand keep only columns that matches row values in high_purity_coldata
+# first, make barcode row names for high_purity_coldata and remove '-'
+rownames(high_purity_coldata) <- high_purity_coldata$barcode
+rownames(high_purity_coldata) <- gsub("-", "", rownames(high_purity_coldata))
+
+# in paad_matrix_unstrand keep only columns that matches row values in high_purity_coldata
+high_purity_pmu <- paad_matrix_unstrand[, colnames(paad_matrix_unstrand) %in% rownames(high_purity_coldata)]
+```
+
+## 
+
+```{r}
+# check consistency of row and column names
+# check if all row names of high_purity_coldata are present as column names in high_purity_pmu.
+all(rownames(high_purity_coldata) %in% colnames(high_purity_pmu))
+
+# check if all the row names of high_purity_coldata are exactly equal to all the column names of high_purity_pmu.
+all(rownames(high_purity_coldata) == colnames(high_purity_pmu))
+```
+
+## *DESeqDataSet*
+
+```{r}
+# create DESeqDataSet
+dds <- DESeqDataSetFromMatrix(countData = high_purity_pmu,
+                              colData = high_purity_coldata,
+                              design = ~ sampletype)
+```
+
+### **Pre-filtering**
+
+```{r}
+# pre-filtering: removing rows with low gene counts
+# keeping rows that have at least >10 reads total
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+```
+
+```{r}
+# set the factor level
+dds$sampletype <- relevel(dds$sampletype, ref = "SolidTissueNormal")
+```
+
+## **Differential expression analysis**
+
+```{r}
+# run DESeq
+dds<- DESeq(dds)
+```
+
+```{r}
+# perform variance stabilization transformation
+vsdata <- vst(dds, blind = FALSE)
+```
+
+```{r}
+dir.create("PCA")
+#PCA analysis
+normalvstumor_plot <- plotPCA(vsdata, intgroup = "sampletype")
+
+# Export the plot as a PDF file
+pdf("PCA/normalvstumor_plot.pdf")
+print(normalvstumor_plot)
+dev.off()
+
+```
+
+```{r}
+# plot dispersion estimates
+plotDispEsts(dds)
+```
+
+## Results
+
+```{r}
+#get DESeq results
+res <- results(dds, contrast = c("sampletype", "PrimaryTumor", "SolidTissueNormal"))
+res
+```
+
+```{r}
+#no contrast
+#res_eg <- results(dds)
+#res_eg
+```
+
+```{r}
+# explore results
+summary(res)
+```
+
+```{r}
+#res dataframe
+res_df <- as.data.frame(res)
+summary(res_df)
+```
+
+```{r}
+res_df$symbol <- mapIds(org.Hs.eg.db, keys = rownames(res_df), keytype = "ENSEMBL", column = "SYMBOL")
+```
+
+```{r}
+res05_sig <- filter(res05_df, padj < 0.05)
+dim(res05_sig)
+```
+
+```{r}
+# filter results at 0.05 FDR
+res0.05 <- results(dds, alpha = 0.05)
+summary(res0.05)
+```
+
+```{r}
+res0.05
+```
+
+```{r}
+plotMA(res0.05)
+```
+
+```{r}
+keytypes(org.Hs.eg.db)
+```
+
+```{r}
+# to examine the counts of reads for a single gene across the groups.
+#TRIP13
+TRIP13_plot <- plotCounts(dds, gene= "ENSG00000071539", intgroup="sampletype")
+
+# Export the plot as a PDF file
+pdf("PCA/TRIP13_plot.pdf")
+print(TRIP13_plot)
+dev.off()
+```
+
+```{r}
+# convert ENSEMBL IDs to gene symbols
+gene_symbols <- mapIds(org.Hs.eg.db,
+       keys = rownames(res0.05),
+       keytype = 'ENSEMBL',
+       column = 'SYMBOL')
+```
+
+```{r}
+# add gene symbols as a new column to results
+res0.05$gene_symbols <- gene_symbols
+```
+
+```{r}
+# remove rows with NA or blank values in the gene_symbols column
+res0.05 <- res0.05[!is.na(res0.05$gene_symbols) & res0.05$gene_symbols != "", ]
+```
+
+```{r}
+# significant genes
+sigs <- na.omit(res0.05)
+sigs <- sigs[sigs$padj < 0.05, ]
+```
+
+```{r}
+#  write results to CSV and Excel filess
+write.csv(sigs, file = "tcga_paad_DESeq_high_purity.csv", row.names = TRUE)
+write.xlsx(sigs, file = "tcga_paad_DESeq_high_purity.xlsx", rowNames = TRUE)
+```
+
+## Post DES analysis
+
+```{r}
+#match with DDR genes
+#import ddr genes into r
+ddr_genes <- read.xlsx("ddr_genes/ddr_genes_annoated.xlsx", sheet = 1)
+ddr <- ddr_genes
+```
+
+```{r}
+# match significant genes with DDR genes
+sigs_DEGs <- as.data.frame(sigs)
+# convert row names of sigs_DEGs to a column and rename the column
+sigs_DEGs <- data.frame(ensembl_id = rownames(sigs_DEGs), sigs_DEGs, row.names = NULL)
+sigs_ddr <- inner_join(sigs_DEGs, ddr_genes, by = c("ensembl_id" = "ENSEMBL"))
+```
+
+```{r}
+# Write matched genes to file
+write.csv(sigs_ddr, file = "sigs_ddr.csv", row.names = TRUE)
+```
+
+## DDR genes that are overexpressed
+
+```{r}
+#import DDR gene list
+ddr <- read_excel("ddr_genes_annotated.xlsx")
+head(ddr)
+```
+
+## volcano plot of all the DDR genes that matches res
+
+```{r}
+#filter DDR genes from results
+res_df_ddr <- inner_join(ddr, res_df, by = c("SYMBOL" = "symbol"))
+```
+
+```{r}
+dir.create("volcano")
+# Generate the volcano plot
+res_df_ddr_plot <- EnhancedVolcano(res_df_ddr, 
+                                 x = "log2FoldChange", 
+                                 y = "padj", 
+                                 lab = res_df_ddr$SYMBOL,
+                                 FCcutoff = 0.5,
+                                 pCutoff = 0.05,
+                                 title = "DESeq2 'Tumors' vs 'Normal' results",
+                                 subtitle = "Differential expression DDR genes in PDAC",
+                                 caption = bquote(~Log[2]~ "fold change cutoff, 0.5; padj cutoff, 0.05"))
+
+# Export the plot as a PDF file
+pdf("volcano/res_df_ddr_plot.pdf")
+print(res_df_ddr_plot)
+dev.off()
+```
+
+```{r}
+selected <- c("TRIP13")
+
+# Generate the volcano plot
+res_df_ddr_TRIP13_plot <- EnhancedVolcano(res_df_ddr, 
+                                 x = "log2FoldChange", 
+                                 y = "padj", 
+                                 lab = res_df_ddr$SYMBOL,
+                                 FCcutoff = 0.5,
+                                 pCutoff = 0.05,
+                                 select = selected,
+                                 title = "DESeq2 'Tumors' vs 'Normal' results' results",
+                                 subtitle = "Differential expression TRIP13",
+                                 caption = bquote(~Log[2]~ "fold change cutoff, 0.5; padj cutoff, 0.05"))
+
+# Export the plot as a PDF file
+pdf("volcano/res_df_ddr_TRIP13_plot.pdf")
+print(res_df_ddr_TRIP13_plot)
+dev.off()
+```
+
+## DDR genes that are overexpressed
+
+```{r}
+res_df_ddr_oe <- res_df_ddr %>% filter(log2FoldChange > 0.5)
+res_df_ddr_oe <- res_df_ddr_oe %>% filter(padj < 0.05)
+```
+
+```{r}
+dir.create("final")
+write.csv(as.data.frame(res_df_ddr_oe), 
+          file="final/res_df_ddr_oe.csv")
+```
+
+### DDR genes that are down regulated
+
+```{r}
+res_df_ddr_dr <- res_df_ddr %>% filter(log2FoldChange < -0.5)
+res_df_ddr_dr <- res_df_ddr_dr %>% filter(padj < 0.05)
+```
+
+## Heatmap of DDR OE genes
+
+```{r}
+vsd <- vst(dds, blind=FALSE)
+```
+
+```{r}
+# Extract the normalized expression values matrix from 'vsd'
+vsd_matrix <- assay(vsd)
+#convert to dataframe
+vsd_df <- as.data.frame(vsd_matrix)
+#add gene symbols column
+vsd_df_symbol <- vsd_df
+vsd_df_symbol$SYMBOL <- mapIds(org.Hs.eg.db, keys = rownames(vsd_df), keytype = "ENSEMBL", column = "SYMBOL")
+```
+
+```{r}
+res_df_ddr_oe_counts <- inner_join(vsd_df_symbol, res_df_ddr_oe, by = "SYMBOL")
+rownames(res_df_ddr_oe_counts) <- res_df_ddr_oe_counts$SYMBOL
+res_df_ddr_oe_counts <- res_df_ddr_oe_counts %>% select(1:79)
+```
+
+```{r}
+# Open PDF device
+pdf("final/res_df_ddr_oe_counts.pdf", width = 10, height = 20)  # Adjust width and height as needed
+
+# Generate heatmap with adjusted parameters
+pheatmap(res_df_ddr_oe_counts, 
+         scale = "row",          # Scale rows
+         cluster_rows = TRUE,    # Cluster rows
+         cluster_cols = TRUE,    # Cluster columns
+         main = "res_df_ddr_oe_counts",  # Title of the heatmap
+         fontsize_cols = 12,
+         fontsize_row = 12,       # Font size of row labels
+         angle_row = 45)         # Rotate row labels by 45 degrees
+
+# Close PDF device
+dev.off()
+```
+
+```{r}
+#no column names
+# Open PDF device
+pdf("final/res_df_ddr_oe_counts_noColNames.pdf", width = 10, height = 20)  # Adjust width and height as needed
+
+# Generate heatmap with adjusted parameters
+pheatmap(res_df_ddr_oe_counts, 
+         scale = "row",          # Scale rows
+         cluster_rows = TRUE,    # Cluster rows
+         cluster_cols = TRUE,    # Cluster columns
+         main = "res_df_ddr_oe_counts_noColNames",  # Title of the heatmap
+         show_colnames = F,
+         fontsize_cols = 12,
+         fontsize_row = 12,       # Font size of row labels
+         angle_row = 45)         # Rotate row labels by 45 degrees
+
+# Close PDF device
+dev.off()
+```
+
+Annotated plot
+
+```{r}
+#annotation file
+
+# Create a data frame with condition as the annotation column
+annotation_df <- select(high_purity_coldata, "sampletype")
+annotation_df$sampleid <- rownames(annotation_df)
+res_df_ddr_oe_counts_colnames <- as.data.frame(colnames(res_df_ddr_oe_counts))
+colnames(res_df_ddr_oe_counts_colnames)[1] <- "sampleid"
+filtered_annotation_df <- inner_join(annotation_df, res_df_ddr_oe_counts_colnames, by = c("sampleid"))
+```
+
+```{r}
+# Reorder the columns to match the order of res_df_ddr_oe_counts
+rownames(filtered_annotation_df) <- filtered_annotation_df$sampleid
+filtered_annotation_df <- select(filtered_annotation_df, 1)
+all(rownames(filtered_annotation_df) == colnames(res_df_ddr_oe_counts))
+```
+
+```{r}
+# Open PDF device
+pdf("final/res_df_ddr_oe_counts_annotated.pdf", width = 10, height = 20)  # Adjust width and height as needed
+
+# Generate heatmap with adjusted parameters
+pheatmap(res_df_ddr_oe_counts, 
+         scale = "row",          # Scale rows
+         cluster_rows = TRUE,    # Cluster rows
+         cluster_cols = TRUE,    # Cluster columns
+         main = "res_df_ddr_oe_counts_annotated",  # Title of the heatmap
+         show_colnames = F,
+         annotation_col = filtered_annotation_df,
+         fontsize_cols = 12,
+         fontsize_row = 12,       # Font size of row labels
+         angle_row = 45)         # Rotate row labels by 45 degrees
+
+# Close PDF device
+dev.off()
+```
+
+## Steps for **GSEA** analysis
+
+```{r}
+#Extract relevant data
+genes_to_test <- res$log2FoldChange
+names(genes_to_test) <- rownames(res)
+```
+
+```{r}
+# Remove NA values
+genes_to_test <- genes_to_test[!is.na(genes_to_test)]
+```
+
+```{r}
+# Sort by log2FoldChange
+genes_to_test <- sort(genes_to_test, decreasing = TRUE)
+```
+
+```{r}
+# GSEA using clusterProfiler
+# Perform GSEA using GO terms for biological processes (BP)
+gsea_results <- gseGO(geneList = genes_to_test,
+                      OrgDb = org.Hs.eg.db,
+                      ont = "BP",
+                      keyType = "ENSEMBL", # or "SYMBOL" depending on your gene identifiers
+                      pvalueCutoff = 0.05,
+                      verbose = FALSE)
+```
+
+```{r}
+# Dot plot of GSEA results
+dot_plot <- dotplot(gsea_results, showCategory = 20) + ggtitle("GSEA of GO Biological Processes")
+# Save the dot plot to a PDF file
+ggsave("GSEA/dot_plot_gsea_results.pdf", plot = dot_plot, width = 10, height = 8)
+```
+
+```{r}
+gsea_results_adjeps <- gseGO(geneList = genes_to_test,
+                      OrgDb = org.Hs.eg.db,
+                      ont = "BP",
+                      keyType = "ENSEMBL", # or "SYMBOL" depending on your gene identifiers
+                      pvalueCutoff = 0.05,
+                      eps = 0,  # Set eps argument to zero for better estimation
+                      verbose = FALSE)
+head(gsea_results_adjeps)
+```
+
+### GSEA for top 10
+
+```{r}
+# Dot plot of GSEA results
+dot_plot_adjeps_top10_edited <- dotplot(gsea_results_adjeps, showCategory = 10) + 
+  ggtitle("GSEA of GO Biological Processes") + 
+  theme(
+    plot.title = element_text(size = 16, face = "plain", color = "black"),
+    axis.title = element_text(size = 16, face = "plain", color = "black"),
+    axis.text = element_text(size = 14, face = "plain", color = "black"),
+    legend.title = element_text(size = 14, face = "bold", color = "black"),
+    legend.text = element_text(size = 16, face = "plain", color = "black"),
+    axis.text.x = element_text(size = 16, face = "plain", color = "black"),
+    axis.text.y = element_text(size = 16, face = "plain", color = "black")
+  )
+
+# Save the dot plot to a PDF file
+ggsave("GSEA/dot_plot_adjeps_top10_edited_gsea_results.pdf", plot = dot_plot_adjeps_top10_edited, width = 10, height = 8)
+```

@@ -1,0 +1,707 @@
+---
+title: "HPNE_RNA-Seq_DESeq2_GSEA_ddr"
+format: html
+editor: visual
+---
+
+# Identify differentially expressed DDR genes in HPNE KRAS mutant vs HPNE WT cells
+
+## load libraries and import data/count matrix
+
+```{r}
+library(tidyr)
+library(dplyr)
+library(writexl)
+library(readxl)
+# Install and load the VennDiagram package
+#install.packages("VennDiagram")
+library(VennDiagram)
+library(pheatmap)
+library(DESeq2)
+library(ggplot2)
+library("pheatmap")
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library(EnhancedVolcano)
+library(clusterProfiler)
+library(enrichplot)
+```
+
+```{r}
+#import data
+#import differentially expressed genes, gene annoations, and column_key files
+#In R, when you use row.names = 1 as an argument in functions like read.csv() or read.delim(), it indicates that the first column of the data should be used as row names.
+cts <- read.csv("counts_matrix_ordered.csv", header = TRUE, row.names = 1)
+#tidy columns
+cts <- select(cts, 1:5, 9:11)
+cts
+```
+
+### define colData and design
+
+```{r}
+#condition should be factor not  a character or number
+condition <- factor(c(colnames(cts)))
+```
+
+```{r}
+coldata <- data.frame(row.names = colnames(cts), condition)
+coldata$condition <- gsub("_\\d+$", "", coldata$condition)
+coldata$condition <- as.factor(coldata$condition)
+coldata
+```
+
+```{r}
+all(rownames(coldata) %in% colnames(cts))
+```
+
+```{r}
+all(rownames(coldata) == colnames(cts))
+```
+
+```{r}
+#if all(rownames(coldata) == colnames(cts)) is false then make them ==
+#cts <- cts[, rownames(coldata)]
+#all(rownames(coldata) == colnames(cts))
+```
+
+### *DESeqDataSet*
+
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = cts,
+                              colData = coldata,
+                              design = ~condition)
+```
+
+### **Pre-filtering**
+
+```{r}
+smallestGroupSize <- 3
+keep <- rowSums(counts(dds) >= 10) >= smallestGroupSize
+dds <- dds[keep,]
+```
+
+### **Note on factor levels**
+
+```{r}
+#By default, R will choose a reference level for factors based on alphabetical order
+dds$condition <- factor(dds$condition, levels = c("KRAS_WT","KRAS_G12V_dox"))
+```
+
+## **Differential expression analysis**
+
+```{r}
+dds <- DESeq(dds)
+res <- results(dds)
+res
+```
+
+```{r}
+#summary
+summary(res)
+```
+
+```{r}
+#res dataframe
+res_df <- as.data.frame(res)
+summary(res_df)
+```
+
+```{r}
+res_df$symbol <- mapIds(org.Hs.eg.db, keys = rownames(res_df), keytype = "ENSEMBL", column = "SYMBOL")
+```
+
+```{r}
+res_padj_l2fc <- results(dds, alpha = 0.05, lfcThreshold = 0.5)
+summary(res_padj_l2fc)
+```
+
+```{r}
+res_padj_l2fc_df <- as.data.frame(res_padj_l2fc)
+res_padj_l2fc_df <- res_padj_l2fc_df %>% 
+                    filter(padj < 0.05) %>% 
+                    filter(abs(log2FoldChange) > 0.5)
+res_padj_l2fc_symbol <- res_padj_l2fc_df
+res_padj_l2fc_symbol$symbol <- mapIds(org.Hs.eg.db, keys = rownames(res_padj_l2fc_symbol), keytype = "ENSEMBL", column = "SYMBOL")
+```
+
+```{r}
+#how many gene have padj less than 0.1
+sum(res$padj < 0.1, na.rm=TRUE)
+```
+
+```{r}
+sum(res$padj < 0.05, na.rm=TRUE)
+```
+
+```{r}
+sum(res$padj < 0.01, na.rm=TRUE)
+```
+
+```{r}
+#apply padj = 0.05
+res05 <- results(dds, alpha=0.05)
+summary(res05)
+```
+
+```{r}
+#add gene symbols column
+res05$symbol <- mapIds(org.Hs.eg.db, keys = rownames(res05), keytype = "ENSEMBL", column = "SYMBOL")
+res05_df <- as.data.frame(res05)
+```
+
+```{r}
+res05_sig <- filter(res05_df, padj < 0.05)
+dim(res05_sig)
+```
+
+```{r}
+#dir.create("hpne_rnaseq_20240514")
+write.csv(as.data.frame(res05), 
+          file="hpne_rnaseq_20240514/KRAS_G12V_dox_0.05.csv")
+write.csv(as.data.frame(res05_sig), 
+          file="hpne_rnaseq_20240514/KRAS_G12V_dox_padj0.05.csv")
+```
+
+```{r}
+plotMA(res, ylim=c(-2,2))
+```
+
+```{r}
+# to examine the counts of reads for a single gene across the groups.
+#TRIP13
+plotCounts(dds, gene= "ENSG00000071539", intgroup="condition")
+```
+
+## Variance stabilizing transformation
+
+```{r}
+# this gives log2(n + 1)
+#ntd <- normTransform(dds)
+#head(assay(ntd), 3)
+```
+
+```{r}
+vsd <- vst(dds, blind=FALSE)
+```
+
+```{r}
+#dir.create("PCA")
+#PCA analysis
+WTvsKRASG12V_plot <- plotPCA(vsd, intgroup = "condition")
+
+# Export the plot as a PDF file
+pdf("PCA/WTvsKRASG12V_plot.pdf")
+print(WTvsKRASG12V_plot)
+dev.off()
+```
+
+```{r}
+vsd <- vst(dds, blind=FALSE)
+head(assay(vsd), 3)
+```
+
+```{r}
+# Extract the normalized expression values matrix from 'vsd'
+vsd_matrix <- assay(vsd)
+#convert to dataframe
+vsd_df <- as.data.frame(vsd_matrix)
+#add gene symbols column
+vsd_df$symbol <- mapIds(org.Hs.eg.db, keys = rownames(vsd_df), keytype = "ENSEMBL", column = "SYMBOL")
+ens_to_sym <- vsd_df$symbol
+remove 
+#add symbols as rownames
+rownames(vsd_df) <- vsd_df$symbol
+
+# Plot the heatmap using the extracted matrix
+pheatmap(vsd_matrix, 
+          scale = "row",          # Scale rows
+          cluster_rows = TRUE,    # Cluster rows
+          cluster_cols = FALSE,   # Cluster columns
+          main = "vsd")
+
+# Close PDF device
+dev.off()
+```
+
+```{r}
+select <- order(rowMeans(counts(dds,normalized=TRUE)),
+                decreasing=TRUE)[1:20]
+df <- as.data.frame(colData(dds)[,c("condition")])
+
+#heatmap
+pheatmap(assay(ntd)[select,], cluster_rows=TRUE, show_rownames=FALSE,
+         cluster_cols=FALSE, annotation_col=df)
+```
+
+## Heatmap of DDR gene differentially expressed in HPNE KRAS G12V
+
+```{r}
+#import DDR gene list
+ddr <- read_excel("ddr_genes_annotated.xlsx")
+head(ddr)
+```
+
+### heatmap of transformed counts
+
+```{r}
+#add gene symbols as row name
+#first convert vsd to dataframe
+vsd_df <- as.data.frame(vsd_matrix)
+
+#convert resSig05 rownames to a column name ENSEMBL
+vsd_df <- vsd_df %>% mutate(ENSEMBL = rownames(vsd_df))
+vsd_df
+```
+
+```{r}
+#filter DDR genes from count matrix
+vsd_df_ddr <- inner_join(ddr, vsd_df, by = c("ENSEMBL"))
+vsd_df_ddr
+```
+
+```{r}
+vsd_df_ddr <- select(vsd_df_ddr, 1, 4:11)
+vsd_df_ddr
+```
+
+```{r}
+# Convert tibble to dataframe
+vsd_df_ddr <- as.data.frame(vsd_df_ddr)
+
+# Assuming "Symbol" is a column in count_matrix_ddr_select
+rownames(vsd_df_ddr) <-vsd_df_ddr$SYMBOL
+
+# Remove the "Symbol" column from the dataframe
+vsd_df_ddr <- vsd_df_ddr[, -which(names(vsd_df_ddr) == "SYMBOL")]
+```
+
+```{r}
+# Open PDF device
+pdf("heatmap/vsd_df_ddr.pdf")
+
+# Create a heatmap using pheatmap
+pheatmap(vsd_df_ddr, 
+         scale = "row",          # Scale rows
+         cluster_rows = TRUE,    # Cluster rows
+         cluster_cols = FALSE,    # Cluster columns
+         main = "RNA-seq vst counts Heatmap",  # Title of the heatmap
+         fontsize_cols = 6,
+         fontsize_row = 3.5,       # Font size of row labels
+         angle_row = 45)         # Rotate row labels by 45 degrees
+
+# Close PDF device
+dev.off()
+```
+
+### Heatmap of DEG DDR overexpressed
+
+```{r}
+vsd_df_ddr_oe <- vsd_df_ddr %>% filter()
+# Open PDF device
+pdf("heatmap/vsd_df_ddr_oe.pdf")
+
+# Create a heatmap using pheatmap
+pheatmap(vsd_df_ddr_oe, 
+         scale = "row",          # Scale rows
+         cluster_rows = TRUE,    # Cluster rows
+         cluster_cols = FALSE,    # Cluster columns
+         main = "RNA-seq vst counts Heatmap",  # Title of the heatmap
+         fontsize_cols = 6,
+         fontsize_row = 3.5,       # Font size of row labels
+         angle_row = 45)         # Rotate row labels by 45 degrees
+
+# Close PDF device
+dev.off()
+```
+
+```{r}
+
+```
+
+## Volcano of DDR gene differentially expressed in HPNE KRAS G12V
+
+```{r}
+#filter DDR genes that are significantly DE
+res05_sig_ddr <- inner_join(ddr, res05_sig, by = c("SYMBOL" = "symbol"))
+res05_sig_ddr
+```
+
+```{r}
+EnhancedVolcano(res05_sig_ddr, x = "log2FoldChange", y = "padj", lab = res05_sig_ddr$SYMBOL)
+```
+
+Volcano plot of all DEG DDR padj \< 0.05
+
+```{r}
+#dir.create("volcano")
+
+# Generate the volcano plot
+res05_sig_ddr_plot <- EnhancedVolcano(res05_sig_ddr, 
+                                 x = "log2FoldChange", 
+                                 y = "padj", 
+                                 lab = res05_sig_ddr$SYMBOL,
+                                 FCcutoff = 0.05)
+
+# Export the plot as a PDF file
+pdf("final/res05_sig_ddr_plot.pdf")
+print(res05_sig_ddr_plot)
+dev.off()
+```
+
+```{r}
+#without KRAS
+res05_sig_ddr
+
+# Generate the volcano plot
+res05_sig_ddr_plot <- EnhancedVolcano(res05_sig_ddr, 
+                                 x = "log2FoldChange", 
+                                 y = "padj", 
+                                 lab = res05_sig_ddr$SYMBOL,
+                                 FCcutoff = 0.05)
+
+# Export the plot as a PDF file
+pdf("final/res05_sig_ddr_plot.pdf")
+print(res05_sig_ddr_plot)
+dev.off()
+```
+
+```{r}
+#volcano plot of all DEGs padj < 0.05
+# Generate the volcano plot
+res05_sig_plot <- EnhancedVolcano(res05_sig, 
+                                 x = "log2FoldChange", 
+                                 y = "padj", 
+                                 lab = res05_sig$SYMBOL,
+                                 FCcutoff = 0.05)
+
+# Export the plot as a PDF file
+pdf("volcano/res05_sig_plot.pdf")
+print(res05_sig_plot)
+dev.off()
+```
+
+## volcano plot of all the DDR genes that matches res
+
+```{r}
+#all DDR in res
+res_df_ddr <- inner_join(ddr, res_df, by = c("SYMBOL" = "symbol"))
+dim(res_df_ddr)
+```
+
+```{r}
+res_df_ddr_padj <- filter(res_df_ddr, padj < 0.05)
+dim(res_df_ddr_padj)
+```
+
+```{r}
+#DDR that are DEGs
+res_df_ddr_padj_l2fc <- filter(res_df_ddr_padj, abs(log2FoldChange) > 0.5)
+dim(res_df_ddr_padj_l2fc)
+```
+
+```{r}
+#DDR that are OE
+res_df_ddr_padj_l2fc_oe <- filter(res_df_ddr_padj, log2FoldChange > 0.5)
+dim(res_df_ddr_padj_l2fc_oe)
+```
+
+```{r}
+# Generate the volcano plot
+res_df_ddr_plot <- EnhancedVolcano(res_df_ddr, 
+                                 x = "log2FoldChange", 
+                                 y = "padj", 
+                                 lab = res_df_ddr$SYMBOL,
+                                 FCcutoff = 0.5,
+                                 pCutoff = 0.05)
+
+# Export the plot as a PDF file
+pdf("volcano/res_df_ddr_plot.pdf")
+print(res_df_ddr_plot)
+dev.off()
+```
+
+### volcano plot of all the DDR genes that matches res minus KRAS
+
+```{r}
+res_df_ddr_noKRAS <- filter(res_df_ddr, res_df_ddr$SYMBOL != "KRAS")
+```
+
+```{r}
+# Generate the volcano plot
+res_df_ddr_noKRAS_plot <- EnhancedVolcano(res_df_ddr_noKRAS, 
+                                 x = "log2FoldChange", 
+                                 y = "padj", 
+                                 lab = res_df_ddr_noKRAS$SYMBOL,
+                                 FCcutoff = 0.5,
+                                 pCutoff = 0.05,
+                                 title = "DESeq2 'KRAS G12V dox' vs 'KRAS WT' results",
+                                 subtitle = "Differential expression DDR",
+                                 caption = bquote(~Log[2]~ "fold change cutoff, 0.5; padj cutoff, 0.05"))
+
+# Export the plot as a PDF file
+pdf("volcano/res_df_ddr_noKRAS_plot.pdf")
+print(res_df_ddr_noKRAS_plot)
+dev.off()
+```
+
+TRIP13
+
+```{r}
+selected <- c("TRIP13")
+
+# Generate the volcano plot
+res_df_ddr_TRIP13_plot <- EnhancedVolcano(res_df_ddr_noKRAS, 
+                                 x = "log2FoldChange", 
+                                 y = "padj", 
+                                 lab = res_df_ddr_noKRAS$SYMBOL,
+                                 FCcutoff = 0.5,
+                                 pCutoff = 0.05,
+                                 select = selected,
+                                 title = "DESeq2 'KRAS G12V dox' vs 'KRAS WT' results",
+                                 subtitle = "Differential expression TRIP13",
+                                 caption = bquote(~Log[2]~ "fold change cutoff, 0.5; padj cutoff, 0.05"))
+
+# Export the plot as a PDF file
+pdf("volcano/res_df_ddr_TRIP13_plot.pdf")
+print(res_df_ddr_TRIP13_plot)
+dev.off()
+```
+
+#### example / sample
+
+```{r}
+p1 <- EnhancedVolcano(res_df_ddr_noKRAS,
+    lab = res_df_ddr_noKRAS$SYMBOL,
+    x = "log2FoldChange",
+    y = "padj",
+    pCutoff = 0.05,
+    FCcutoff = 0.5,
+    pointSize = c(ifelse(res_df_ddr_noKRAS$log2FoldChange>0.5, 1, 1)),
+    labSize = 6.0,
+    shape = c(6, 6, 19, 16),
+    title = "DESeq2 DDR results",
+    subtitle = "Differential expression DDR",
+    caption = bquote(~Log[2]~ "fold change cutoff, 0.5; padj cutoff, 0.05"),
+    legendPosition = "right",
+    legendLabSize = 14,
+    col = c("grey30", "forestgreen", "royalblue", "red2"),
+    colAlpha = 0.9,
+    drawConnectors = TRUE,
+    hline = c(10e-8),
+    widthConnectors = 0.5)
+
+  # Export the plot as a PDF file
+pdf("volcano/p1.pdf")
+print(p1)
+dev.off()
+```
+
+## DDR genes that are overexpressed
+
+```{r}
+res05_sig_ddr_oe <- res05_sig_ddr %>% filter(log2FoldChange > 0.5)
+```
+
+```{r}
+dir.create("final")
+write.csv(as.data.frame(res05_sig_ddr_oe), 
+          file="final/res05_sig_ddr_oe.csv")
+```
+
+## Heatmap of DDR OE genes
+
+```{r}
+vsd_df_ddr_symbol <- vsd_df_ddr
+vsd_df_ddr_symbol$SYMBOL <- rownames(vsd_df_ddr)
+res05_sig_ddr_oe_counts <- inner_join(vsd_df_ddr_symbol, res05_sig_ddr_oe, by = "SYMBOL")
+rownames(res05_sig_ddr_oe_counts) <- res05_sig_ddr_oe_counts$SYMBOL
+res05_sig_ddr_oe_counts <- res05_sig_ddr_oe_counts %>% select(1:8)
+```
+
+```{r}
+# Open PDF device
+pdf("final/res05_sig_ddr_oe_counts.pdf", width = 10, height = 20)  # Adjust width and height as needed
+
+# Generate heatmap with adjusted parameters
+pheatmap(res05_sig_ddr_oe_counts, 
+         scale = "row",          # Scale rows
+         cluster_rows = TRUE,    # Cluster rows
+         cluster_cols = FALSE,    # Cluster columns
+         main = "res05_sig_ddr_oe_counts",  # Title of the heatmap
+         fontsize_cols = 12,
+         fontsize_row = 12,       # Font size of row labels
+         angle_row = 45)         # Rotate row labels by 45 degrees
+
+# Close PDF device
+dev.off()
+```
+
+### annotated
+
+```{r}
+all(rownames(coldata) == colnames(res05_sig_ddr_oe_counts))
+```
+
+```{r}
+# Open PDF device
+pdf("final/res05_sig_ddr_oe_counts_annotated.pdf", width = 10, height = 20)  # Adjust width and height as needed
+
+# Generate heatmap with adjusted parameters
+pheatmap(res05_sig_ddr_oe_counts, 
+         scale = "row",          # Scale rows
+         cluster_rows = TRUE,    # Cluster rows
+         cluster_cols = FALSE,    # Cluster columns
+         main = "res05_sig_ddr_oe_counts_annotated",  # Title of the heatmap
+         show_colnames = FALSE,
+         annotation_col = coldata,
+         fontsize_cols = 12,
+         fontsize_row = 12,       # Font size of row labels
+         angle_row = 45)         # Rotate row labels by 45 degrees
+
+# Close PDF device
+dev.off()
+```
+
+## GSEA
+
+```{r}
+res_df_stat <- res_df %>% arrange(desc(stat))
+gene_list <- res_df_stat$stat
+names(gene_list) <- res_df_stat$symbol
+gene_list
+```
+
+```{r}
+gse <- gseGO(gene_list,
+             ont = "BP",
+             keyType = "SYMBOL",
+             OrgDb = "org.Hs.eg.db",
+             eps = 1e-300)
+```
+
+```{r}
+as.data.frame(gse)
+```
+
+```{r}
+gseaplot(gse, geneSetID = 1)
+```
+
+```{r}
+gseaplot(gse, geneSetID = 2)
+```
+
+```{r}
+gseaplot(gse, geneSetID = 3)
+```
+
+## Steps for **Over-Representation Analysis (ORA)** analysis
+
+```{r}
+# Extract relevant data (SYMBOL, ENSEMBL, or ENTREZ ID)
+#up regulated DEGs
+genes_up <- rownames(res_padj_l2fc_df[res_padj_l2fc_df$log2FoldChange > 0.5,])
+
+```
+
+```{r}
+# Remove NA values
+genes_up <- genes_up[!is.na(genes_up)]
+```
+
+```{r}
+#analysis
+GO_results <- enrichGO(gene = genes_up, OrgDb = org.Hs.eg.db, keyType = "ENSEMBL", ont = "BP" )
+```
+
+```{r}
+as.data.frame(GO_results)
+```
+
+```{r}
+fit <- plot(barplot(GO_results, showCategory = 20))
+
+pdf("GSEA/genes_up.pdf")
+print(fit)
+dev.off()
+```
+
+```{r}
+
+```
+
+## Steps for **GSEA** analysis
+
+```{r}
+# Extract relevant data
+genes_to_test <- res$log2FoldChange
+names(genes_to_test) <- rownames(res)
+```
+
+```{r}
+# Remove NA values
+genes_to_test <- genes_to_test[!is.na(genes_to_test)]
+```
+
+```{r}
+# Sort by log2FoldChange
+genes_to_test <- sort(genes_to_test, decreasing = TRUE)
+```
+
+```{r}
+# GSEA using clusterProfiler
+# Perform GSEA using GO terms for biological processes (BP)
+gsea_results <- gseGO(geneList = genes_to_test,
+                      OrgDb = org.Hs.eg.db,
+                      ont = "BP",
+                      keyType = "ENSEMBL", # or "SYMBOL" depending on your gene identifiers
+                      pvalueCutoff = 0.05,
+                      verbose = FALSE)
+```
+
+```{r}
+# Dot plot of GSEA results
+dot_plot <- dotplot(gsea_results, showCategory = 20) + ggtitle("GSEA of GO Biological Processes")
+# Save the dot plot to a PDF file
+ggsave("GSEA/dot_plot_gsea_results.pdf", plot = dot_plot, width = 10, height = 8)
+```
+
+```{r}
+
+# Ridge plot
+ridgeplot(gsea_results) + ggtitle("Ridge Plot of GSEA Results")
+```
+
+```{r}
+
+# GSEA plot for a specific pathway (e.g., "GO:0008152")
+#gseaplot(gsea_results, geneSetID = "GO:0008152")
+```
+
+### GSEA for top 10
+
+```{r}
+# Dot plot of GSEA results
+dot_plot_top10 <- dotplot(gsea_results, showCategory = 10) + ggtitle("GSEA of GO Biological Processes")
+# Save the dot plot to a PDF file
+ggsave("GSEA/dot_plot_top10_gsea_results.pdf", plot = dot_plot_top10, width = 10, height = 8)
+```
+
+```{r}
+# Dot plot of GSEA results
+dot_plot_top10_edited <- dotplot(gsea_results, showCategory = 10) + 
+  ggtitle("GSEA of GO Biological Processes") + 
+  theme(
+    plot.title = element_text(size = 16, face = "plain", color = "black"),
+    axis.title = element_text(size = 16, face = "plain", color = "black"),
+    axis.text = element_text(size = 14, face = "plain", color = "black"),
+    legend.title = element_text(size = 14, face = "bold", color = "black"),
+    legend.text = element_text(size = 16, face = "plain", color = "black"),
+    axis.text.x = element_text(size = 16, face = "plain", color = "black"),
+    axis.text.y = element_text(size = 16, face = "plain", color = "black")
+  )
+
+# Save the dot plot to a PDF file
+ggsave("GSEA/dot_plot_top10_edited_gsea_results.pdf", plot = dot_plot_top10_edited, width = 10, height = 8)
+```
