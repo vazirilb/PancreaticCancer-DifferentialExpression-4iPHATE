@@ -1,6 +1,7 @@
 # PancreaticCancer-DifferentialExpression-4iPHATE
 
-Repository for HPNE-KRAS(G12V) RNA-seq, TCGA-PAAD analysis and CellPhate assessment using iterative indirect immunofluorescence imaging (4i) performed for manuscript titled 'TRIP13 protects pancreatic cancer cells against intrinsic and therapy-induced DNA replication stress' submitted to NAR Cancer.
+Repository for HPNE-KRAS(G12V) RNA-seq, TCGA-PAAD analysis and CellPhate assessment using iterative indirect immunofluorescence imaging (4i) performed for research article  ['TRIP13 protects pancreatic cancer cells against intrinsic and therapy-induced DNA replication stress'](https://academic.oup.com/narcancer/article/7/1/zcaf009/8087950) published in NAR Cancer.
+
 
 ## Assessing KRAS-induced DNA damage resposne (DDR) transcriptome:
 
